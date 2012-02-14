@@ -144,8 +144,8 @@
         Const sSyncDescKey As String = "SYSTEM\CurrentControlSet\services\SessionArbiter\Parameters"
         Const sCheckPeriodValue As String = "CheckPeriod"
         Const sDisconnectedLimitValue As String = "DisconnectedLimit"
-        Const iDefaultCheckPeriod As Integer = 900000 'Default is 15 minutes
-        Const iDefaultDisconnectedLimit As Integer = 36000000 'Default is 10 hours
+        Const iDefaultCheckPeriod As Integer = 900000 'Default is 15 minutes (90000ms)
+        Const iDefaultDisconnectedLimit As Integer = 600 'Default is 10 hours (600 minutes)
 
         Dim oRegKey As RegistryKey = Nothing
 
@@ -199,8 +199,11 @@
             EventLog.CreateEventSource(sEventSource, "Application")
         End If
 
-        'Write the log entry.
-        EventLog.WriteEntry(sEventSource, Message, Level, EventID)
+        'Make sure we have exclusive access to the log writer.
+        SyncLock EventLog
+            'Write the log entry.
+            EventLog.WriteEntry(sEventSource, Message, Level, EventID)
+        End SyncLock
 
     End Sub
 
