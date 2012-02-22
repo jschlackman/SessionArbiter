@@ -135,13 +135,21 @@
         ''' <param name="UserAccount">User account to read limits for, in the format DOMAIN\username</param>
         ''' <remarks></remarks>
         Private Sub GetFromUserPolicy(ByVal UserAccount As String)
-            Dim oUserPolicy As RegistryKey = GetUserRegistry(UserAccount).OpenSubKey(sPolicyKey, False)
+            Dim oUserKey As RegistryKey = Nothing
 
-            'Read the user policy if it exists.
-            If Not oUserPolicy Is Nothing Then
-                GetFromRegistry(oUserPolicy)
-                oUserPolicy.Close()
+            'Get the user's registry hive and open the RDS policy subkey
+            If GetUserRegistry(UserAccount, oUserKey) Then
+                Dim oUserPolicy As RegistryKey = oUserKey.OpenSubKey(sPolicyKey, False)
+                'Read the user policy if it exists.
+                If Not oUserPolicy Is Nothing Then
+                    GetFromRegistry(oUserPolicy)
+                    'Make sure the key is closed or User Profile Service will complain.
+                    oUserPolicy.Close()
+                End If
             End If
+
+            'Make sure the user's root key is closed too.
+            oUserKey.Close()
 
         End Sub
 
@@ -210,24 +218,24 @@
         ''' <param name="UserAccount">User account to find the registry key of.</param>
         ''' <returns>Read-only reference to registry key if it can be found, otherwise Nothing.</returns>
         ''' <remarks></remarks>
-        Private Function GetUserRegistry(ByVal UserAccount As String) As RegistryKey
+        Private Function GetUserRegistry(ByVal UserAccount As String, ByRef UserKey As RegistryKey) As Boolean
 
-            Dim oReturn As RegistryKey
+            Dim bReturn As Boolean
 
             Try
                 Dim oUser As New Security.Principal.NTAccount(UserAccount)
                 Dim sUserSID As String = oUser.Translate(GetType(Security.Principal.SecurityIdentifier)).ToString
 
                 'Open handle to subkey
-                oReturn = Registry.Users.OpenSubKey(sUserSID, False)
+                UserKey = Registry.Users.OpenSubKey(sUserSID, False)
                 'Close handle to root key, no longer needed.
                 Registry.Users.Close()
 
             Catch ex As Exception
-                oReturn = Nothing
+                bReturn = False
             End Try
 
-            Return oReturn
+            Return bReturn
 
         End Function
 
