@@ -218,7 +218,10 @@
                 Dim oUser As New Security.Principal.NTAccount(UserAccount)
                 Dim sUserSID As String = oUser.Translate(GetType(Security.Principal.SecurityIdentifier)).ToString
 
+                'Open handle to subkey
                 oReturn = Registry.Users.OpenSubKey(sUserSID, False)
+                'Close handle to root key, no longer needed.
+                Registry.Users.Close()
 
             Catch ex As Exception
                 oReturn = Nothing
@@ -413,7 +416,7 @@
 #If DEBUG Then
         Console.WriteLine("Starting debug mode...")
         Dim oDebug As New SessionArbiter()
-        oDebug.JobTimer.Enabled = True
+        oDebug.oCheckTimer.Enabled = True
         Console.ReadKey()
 #Else
         ServiceBase.Run(New SessionArbiter)
