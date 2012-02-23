@@ -81,7 +81,7 @@
             InitLimits()
             'Service params have lowest precedence
             GetFromServiceParams()
-            'Skip loading from machine policy if we are igonring it.
+            'Skip loading from machine policy if we are ignoring it.
             If Not IgnoreRDSPolicy Then GetFromMachinePolicy()
         End Sub
 
@@ -95,7 +95,7 @@
             InitLimits()
             'Service params have lowest precedence
             GetFromServiceParams()
-            'Skip loading from machine and user policy if we are igonring it.
+            'Skip loading from machine and user policy if we are ignoring it.
             If Not IgnoreRDSPolicy Then
                 GetFromUserPolicy(UserAccount)
                 GetFromMachinePolicy()
@@ -231,6 +231,8 @@
                 'Close handle to root key, no longer needed.
                 Registry.Users.Close()
 
+                'Success
+                bReturn = True
             Catch ex As Exception
                 bReturn = False
             End Try
@@ -422,10 +424,10 @@
     Public Shared Sub Main()
 
 #If DEBUG Then
-        Console.WriteLine("Starting debug mode...")
+        Console.WriteLine("Starting debug mode.")
         Dim oDebug As New SessionArbiter()
         oDebug.oCheckTimer.Enabled = True
-        Console.ReadKey()
+        Console.Read()
 #Else
         ServiceBase.Run(New SessionArbiter)
 #End If
@@ -439,22 +441,37 @@
     ''' <remarks></remarks>
     Private Sub OnJobTimer(ByVal sender As System.Object, ByVal e As System.Timers.ElapsedEventArgs) Handles oCheckTimer.Elapsed
 
-
         'Read current config from registry, in case it has changed since last check.
         ReadServiceParameters()
         oCheckTimer.Interval = StandardCheckPeriod
 
         Dim oManager As ITerminalServicesManager = New TerminalServicesManager
+        Dim dLimitTime As Date
 
         Using oServer As ITerminalServer = oManager.GetLocalServer
             oServer.Open()
+
+#If DEBUG Then
+            Console.WriteLine("Starting session check at " & Now)
+#End If
 
             For Each oSession As ITerminalServicesSession In oServer.GetSessions
 
                 'Only check sessions with usernames (ignores Services session).
                 If Not oSession.UserAccount Is Nothing Then
 
+#If DEBUG Then
+                    Console.WriteLine("Checking user " & oSession.UserAccount.Value)
+#End If
+
                     Dim oLimits As New SessionLimits(oSession.UserAccount.Value, IgnoreRDSPolicy)
+
+#If DEBUG Then
+                    Console.WriteLine("Session limits for this user:")
+                    Console.WriteLine("Active: " & oLimits.Active)
+                    Console.WriteLine("Disconnected: " & oLimits.Disconnected)
+                    Console.WriteLine("Idle: " & oLimits.Idle)
+#End If
 
                     'Set next sync to run after configured sync period.
                     If oLimits.CheckPeriod > 0 Then
@@ -464,19 +481,42 @@
 
                     'If this session is disconnected and there is a time limit
                     If (oSession.ConnectionState = ConnectionState.Disconnected) And (oLimits.Disconnected > 0) Then
-                        'Check if it has been disconnected for longer than the configured limit
-                        If oSession.DisconnectTime < Now.AddMilliseconds(-oLimits.Disconnected) Then
+
+                        'Determine when the limit will be/was reached
+                        dLimitTime = oSession.DisconnectTime.Value.AddMilliseconds(oLimits.Disconnected)
+#If DEBUG Then
+                        Console.WriteLine("Session will reach disconnected limit at " & dLimitTime)
+#End If
+
+                        'Check if session has been disconnected for longer than or equal to the configured limit
+                        If Now >= dLimitTime Then
                             LogoffSession(oSession)
+                        Else
+                            'Make sure the limit cannot be reached before the next check
+                            CheckInterval(dLimitTime)
                         End If
+
                     End If
 
                     'If this session is active and there is a time limit
                     If (oSession.ConnectionState = ConnectionState.Active) And (oLimits.Active > 0) Then
-                        'Check if it has been logged in for longer than the configured limit
-                        If oSession.LoginTime < Now.AddMilliseconds(-oLimits.Active) Then
+
+                        'Determine when the limit will be/was reached
+                        dLimitTime = oSession.LoginTime.Value.AddMilliseconds(oLimits.Active)
+
+#If DEBUG Then
+                        Console.WriteLine("Session will reach active limit at " & dLimitTime)
+#End If
+
+                        'Check if session has been logged in for longer than or equal to the configured limit
+                        If Now >= dLimitTime Then
                             'Start counting down to logoff/disconnect
                             StartCountdown(oSession, oLimits.TerminateSession)
+                        Else
+                            'Make sure the limit cannot be reached before the next check
+                            CheckInterval(dLimitTime)
                         End If
+
                     End If
 
                     'NOTE: There is no handler for idle time as the RDS API does not currently return idle time for local console sessions.
@@ -490,7 +530,21 @@
 
     End Sub
 
-    
+    ''' <summary>
+    ''' Checks if a limit is due to be reached before the next check, and adjusts the next check time accordingly
+    ''' </summary>
+    ''' <param name="dLimitTime">Time that the session limit is due to expire.</param>
+    ''' <remarks></remarks>
+    Private Sub CheckInterval(ByVal dLimitTime As Date)
+
+        'If the session limit is due to be reached before the next scheduled check
+        If dLimitTime < Now.AddMilliseconds(oCheckTimer.Interval) Then
+            'Adjust the next check so that it coincides with the time the limit is due to be reached
+            oCheckTimer.Interval = (dLimitTime - Now).TotalMilliseconds
+        End If
+
+    End Sub
+
     ''' <summary>
     ''' Start counting down a session to log off or disconnect.
     ''' </summary>
