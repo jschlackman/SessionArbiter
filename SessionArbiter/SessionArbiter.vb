@@ -1,4 +1,8 @@
-﻿Public Class SessionArbiter
+﻿Imports SessionArbiter.Interops
+Imports System.Windows.Forms
+Imports System.Threading
+
+Public Class SessionArbiter
 
 #If DEBUG Then
     Private EventLog As New EventLog
@@ -7,12 +11,28 @@
 #End If
 
     ''' <summary>
+    ''' Shared variable to store the lid event callback handle.
+    ''' </summary>
+    ''' <remarks></remarks>
+    Private Shared hCallback As IntPtr
+
+    ''' <summary>
     ''' Registry path from HKLM to the SessionArbiter parameters.
     ''' </summary>
     ''' <remarks></remarks>
     Private Const sServiceParamsKey As String = "SYSTEM\CurrentControlSet\services\SessionArbiter\Parameters"
 
+    ''' <summary>
+    ''' Session limit check timer
+    ''' </summary>
+    ''' <remarks></remarks>
     Private WithEvents oCheckTimer As Timers.Timer
+
+    ''' <summary>
+    ''' Background listener thread for lid events
+    ''' </summary>
+    ''' <remarks></remarks>
+    Private ListenThread As Thread
 
     ''' <summary>
     ''' Standard synchronisation period in milliseconds (may be ignored if limits demand more frequent checking).
@@ -100,6 +120,8 @@
                 GetFromUserPolicy(UserAccount)
                 GetFromMachinePolicy()
             End If
+
+
         End Sub
 
         ''' <summary>
@@ -357,6 +379,8 @@
         ''' </summary>
         ''' <remarks></remarks>
         LogoffDisconnectedFailed = 2
+
+        Other = 3
     End Enum
 
     ''' <summary>
@@ -392,6 +416,11 @@
 
         'First sync after 5 seconds
         oCheckTimer.Interval = 5000
+
+        'Create a background listerner thread to process lid events
+        ListenThread = New Thread(AddressOf RunListenThread)
+        ListenThread.IsBackground = True
+
     End Sub
 
 #If Not Debug Then
@@ -404,6 +433,7 @@
     Protected Overrides Sub OnStart(args() As String)
         MyBase.OnStart(args)
         oCheckTimer.Enabled = True
+        ListenThread.Start()
     End Sub
 
     ''' <summary>
@@ -413,7 +443,13 @@
     Protected Overrides Sub OnStop()
         MyBase.OnStop()
         oCheckTimer.Enabled = False
+        ListenThread.Abort()
+
+        'Stop listening for power notifications
+        UnregisterForPowerNotifications()
+
     End Sub
+
 
 #End If
 
@@ -579,7 +615,7 @@
         End Select
 
         Try
-            'Attempt to log the session off
+            'Attempt to log the session off and WAITS for it to finish before continuing.
             Session.Logoff(True)
             'Log success
             WriteEventLogEntry("Successfully logged off " & sLogMessage, EventLogEntryType.Information, ArbiterEvent.LogoffDisconnected)
@@ -684,6 +720,193 @@
             'Write the log entry.
             EventLog.WriteEntry(sEventSource, Message, Level, EventID)
         End SyncLock
+
+    End Sub
+
+    ''' <summary>
+    ''' Register to receive lid close notifications.
+    ''' </summary>
+    ''' <param name="hWnd">Windows handle to receive Windows messages.</param>
+    ''' <remarks></remarks>
+    Private Shared Sub RegisterForPowerNotifications(ByVal hWnd As IntPtr)
+        hCallback = RegisterPowerSettingNotification(hWnd, GUID_LIDCLOSE_ACTION, DEVICE_NOTIFY_WINDOW_HANDLE)
+    End Sub
+
+    ''' <summary>
+    ''' Unregister the application from receiving lid close notifications.
+    ''' </summary>
+    ''' <returns>Success status.</returns>
+    ''' <remarks></remarks>
+    Private Shared Function UnregisterForPowerNotifications() As Boolean
+        Return UnregisterPowerSettingNotification(hCallback)
+    End Function
+
+    ''' <summary>
+    ''' Starts a listener window for lid events
+    ''' </summary>
+    ''' <remarks></remarks>
+    Sub RunListenThread()
+        'Listen for lid events
+        Dim oListener As New LidListener(AddressOf LogoffActiveSessions)
+        Application.Run()
+    End Sub
+
+    ''' <summary>
+    ''' Listener to process power notification messages.
+    ''' </summary>
+    ''' <remarks></remarks>
+    Class LidListener
+        Inherits NativeWindow
+
+        Public Delegate Sub OnLidCloseEvent()
+
+        Private dLidClose As OnLidCloseEvent
+
+        ''' <summary>
+        ''' Stores the date and time the program started listening for messages.
+        ''' </summary>
+        ''' <remarks></remarks>
+        Public Started As DateTime
+
+        ''' <summary>
+        ''' Whether to force the logoff (default is true).
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private ForceLogoff As Boolean
+
+        Public Sub New(ByVal OnLidClose As OnLidCloseEvent)
+
+            MyBase.New()
+
+            'Dummy parameters used to create window
+            Dim oParams As New CreateParams
+
+            With oParams
+                .X = 100
+                .Y = 100
+                .Height = 100
+                .Width = 100
+            End With
+
+            'Create the listener window
+            Me.CreateHandle(oParams)
+
+            'Register this application to receive power notification messages.
+            RegisterForPowerNotifications(Me.Handle)
+            Started = Now
+
+            'Always force the logoff if the /noforce parameter is not specified
+            ForceLogoff = True
+
+            dLidClose = OnLidClose
+
+            For Each sArg In My.Application.CommandLineArgs
+                If sArg.Trim.ToLower = "/noforce" Then ForceLogoff = False
+            Next
+
+#If DEBUG Then
+            If Not ForceLogoff Then Console.WriteLine("/noforce parameter specified. User will not be forced to log off.")
+
+            Console.WriteLine("Listener started: " & Started.ToString & " with handle " & Me.Handle.ToString)
+#End If
+
+
+        End Sub
+
+
+        ''' <summary>
+        ''' Processes Windows messages. Modified to react to power notification messages.
+        ''' </summary>
+        ''' <param name="m">Message type recevied.</param>
+        ''' <remarks></remarks>
+        Protected Overrides Sub WndProc(ByRef m As System.Windows.Forms.Message)
+
+#If DEBUG Then
+            Console.WriteLine("Message received: " & m.Msg)
+#End If
+
+            'Respond to power notification
+            If m.Msg = WM_POWERBROADCAST Then
+                OnPowerBroadcast(m)
+            End If
+
+            'Handle everything else
+            MyBase.WndProc(m)
+
+        End Sub
+
+        ''' <summary>
+        ''' Reacts to the power notification message
+        ''' </summary>.
+        ''' <param name="m">Type of power notification message recevied.</param>
+        ''' <remarks></remarks>
+        Private Sub OnPowerBroadcast(ByRef m As System.Windows.Forms.Message)
+
+            If m.WParam.ToInt32 = PBT_POWERSETTINGCHANGE Then
+
+#If DEBUG Then
+                Console.Write("Power setting change: " & m.LParam.ToString & " at " & Now.ToString)
+#End If
+                'Ignore any notification within 1 second of startup.
+                'This is a fudge since Windows sends a message immediately after registering the listener for some reason, even if the lid
+                'has not been closed.
+                If Started.AddSeconds(1) < Now Then
+
+#If DEBUG Then
+                    Console.WriteLine(", logging user off now.")
+#End If
+
+                    'Log the user off
+                    dLidClose.Invoke()
+
+                Else
+                    'Power notification received immediately after startup, so ignore it.
+#If DEBUG Then
+                    Console.WriteLine(" (ignored).")
+#End If
+                End If
+
+            End If
+
+        End Sub
+
+    End Class
+
+
+
+    ''' <summary>
+    ''' Logs off any sessions that are currently Active (on a client workstation, only the console session can be Active).
+    ''' </summary>
+    ''' <remarks></remarks>
+    Private Sub LogoffActiveSessions()
+
+#If DEBUG Then
+        Console.WriteLine("Checking sessions to log off.")
+#End If
+
+        Dim oManager As ITerminalServicesManager = New TerminalServicesManager
+
+        Using oServer As ITerminalServer = oManager.GetLocalServer
+            oServer.Open()
+
+            For Each oSession As ITerminalServicesSession In oServer.GetSessions
+
+                'Only check sessions with usernames (ignores Services session).
+                If Not oSession.UserAccount Is Nothing Then
+                    If oSession.ConnectionState = ConnectionState.Active Then
+
+                        'Logoff this session
+                        LogoffSession(oSession)
+
+                        'TODO: Only do this if requested
+                        Application.SetSuspendState(PowerState.Suspend, False, False)
+
+                    End If
+                End If
+
+            Next
+
+        End Using
 
     End Sub
 
