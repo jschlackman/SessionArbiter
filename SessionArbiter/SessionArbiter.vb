@@ -1,5 +1,4 @@
-﻿Imports SessionArbiter.Interops
-Imports System.Windows.Forms
+﻿Imports System.Windows.Forms
 Imports System.Threading
 
 Public Class SessionArbiter
@@ -9,12 +8,6 @@ Public Class SessionArbiter
 #Else
     Inherits ServiceBase
 #End If
-
-    ''' <summary>
-    ''' Shared variable to store the lid event callback handle.
-    ''' </summary>
-    ''' <remarks></remarks>
-    Private Shared hCallback As IntPtr
 
     ''' <summary>
     ''' Registry path from HKLM to the SessionArbiter parameters.
@@ -34,6 +27,8 @@ Public Class SessionArbiter
     ''' <remarks></remarks>
     Private ListenThread As Thread
 
+    Private oListener As LidListener
+
     ''' <summary>
     ''' Standard synchronisation period in milliseconds (may be ignored if limits demand more frequent checking).
     ''' </summary>
@@ -47,6 +42,13 @@ Public Class SessionArbiter
     Public IgnoreRDSPolicy As Boolean
 
     ''' <summary>
+    ''' Whether to put the computer into Suspend after a user is logged off due to the lid closing.
+    ''' </summary>
+    ''' <remarks></remarks>
+    Public SuspendAfterLidLogoff As Boolean
+
+
+    ''' <summary>
     ''' Loads and stores configured session limits as they apply to a given user on the current computer.
     ''' </summary>
     ''' <remarks></remarks>
@@ -56,7 +58,12 @@ Public Class SessionArbiter
         ''' Standard registry path to RDS policies
         ''' </summary>
         ''' <remarks></remarks>
-        Private Const sPolicyKey As String = "Software\Policies\Microsoft\Windows NT\Terminal Services"
+        Private Const sPolicyKeyRDS As String = "Software\Policies\Microsoft\Windows NT\Terminal Services"
+        ''' <summary>
+        ''' Registry path to 
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private Const sPolicyKeySA As String = "Software\Policies\SessionArbiter"
 
         ''' <summary>
         ''' Maximum amount of time in milliseconds that the user's session can be active before the session is automatically disconnected or ended. 0 indicates no limit.
@@ -73,7 +80,31 @@ Public Class SessionArbiter
         ''' </summary>
         ''' <remarks></remarks>
         Public Disconnected As UInteger
+        ''' <summary>
+        ''' Whether to log off a session instead of just disconnecting it.
+        ''' </summary>
+        ''' <remarks></remarks>
         Public TerminateSession As Boolean
+        ''' <summary>
+        ''' Whether to log off the session wheh the lid is closed
+        ''' </summary>
+        ''' <remarks></remarks>
+        Public ReadOnly Property LogoffOnLidClose As Boolean
+            Get
+                Return (iLogoff = 1)
+            End Get
+        End Property
+
+        ''' <summary>
+        ''' Logoff on lid close policy state
+        ''' </summary>
+        ''' <remarks>0 indicates not configured (don't log off), 1 indicates log off, 2 indicates the policy is disabled (don't logoff).</remarks>
+        Private iLogoff As UInteger
+        ''' <summary>
+        ''' Whether to ignore RDS policy when reading registry settings
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private bIgnoreRDS As Boolean
 
         ''' <summary>
         ''' Returns a sensible check period in milliseconds based on the configured session limits.
@@ -101,12 +132,14 @@ Public Class SessionArbiter
             InitLimits()
             'Service params have lowest precedence
             GetFromServiceParams()
-            'Skip loading from machine policy if we are ignoring it.
-            If Not IgnoreRDSPolicy Then GetFromMachinePolicy()
+            'Flag to skip loading from machine RDS policy if we are ignoring it.
+            bIgnoreRDS = IgnoreRDSPolicy
+            'Load machine policy
+            GetFromMachinePolicy()
         End Sub
 
         ''' <summary>
-        ''' Readins limits for the given user on the current machine, optionally ignoring any RDS policy settings.
+        ''' Reads limits for the given user on the current machine, optionally ignoring any RDS policy settings.
         ''' </summary>
         ''' <param name="UserAccount">User account to read limits for, in the format DOMAIN\username</param>
         ''' <param name="IgnoreRDSPolicy">Specify True to ignore any configured RDS policies.</param>
@@ -140,12 +173,26 @@ Public Class SessionArbiter
         ''' <remarks></remarks>
         Private Sub GetFromMachinePolicy()
 
-            'Try to get read-only access to the machine policy.
-            Dim oMachinePolicy As RegistryKey = Registry.LocalMachine.OpenSubKey(sPolicyKey, False)
+            Dim oMachinePolicy As RegistryKey
+
+            'First get RDS policy
+            If Not bIgnoreRDS Then
+                'Try to get read-only access to the machine policy.
+                oMachinePolicy = Registry.LocalMachine.OpenSubKey(sPolicyKeyRDS, False)
+
+                'Read the machine policy if it exists.
+                If Not oMachinePolicy Is Nothing Then
+                    GetRDSFromRegistry(oMachinePolicy)
+                    oMachinePolicy.Close()
+                End If
+            End If
+
+            'Now get the Session Arbiter policy
+            oMachinePolicy = Registry.LocalMachine.OpenSubKey(sPolicyKeySA, False)
 
             'Read the machine policy if it exists.
             If Not oMachinePolicy Is Nothing Then
-                GetFromRegistry(oMachinePolicy)
+                GetSAFromRegistry(oMachinePolicy)
                 oMachinePolicy.Close()
             End If
 
@@ -161,13 +208,29 @@ Public Class SessionArbiter
 
             'Get the user's registry hive and open the RDS policy subkey
             If GetUserRegistry(UserAccount, oUserKey) Then
-                Dim oUserPolicy As RegistryKey = oUserKey.OpenSubKey(sPolicyKey, False)
+
+                Dim oUserPolicy As RegistryKey
+
+                If Not bIgnoreRDS Then
+                    'First get RDS policy
+                    oUserPolicy = oUserKey.OpenSubKey(sPolicyKeyRDS, False)
+                    'Read the user policy if it exists.
+                    If Not oUserPolicy Is Nothing Then
+                        GetRDSFromRegistry(oUserPolicy)
+                        'Make sure the key is closed or User Profile Service will complain.
+                        oUserPolicy.Close()
+                    End If
+                End If
+
+                'Now get Session Arbiter policy
+                oUserPolicy = oUserKey.OpenSubKey(sPolicyKeySA, False)
                 'Read the user policy if it exists.
                 If Not oUserPolicy Is Nothing Then
-                    GetFromRegistry(oUserPolicy)
+                    GetSAFromRegistry(oUserPolicy)
                     'Make sure the key is closed or User Profile Service will complain.
                     oUserPolicy.Close()
                 End If
+
             End If
 
             'Make sure the user's root key is closed too.
@@ -186,18 +249,19 @@ Public Class SessionArbiter
 
             'Read the machine policy if it exists.
             If Not oServiceParams Is Nothing Then
-                GetFromRegistry(oServiceParams)
+                GetRDSFromRegistry(oServiceParams)
+                GetSAFromRegistry(oServiceParams)
                 oServiceParams.Close()
             End If
 
         End Sub
 
         ''' <summary>
-        ''' Load limits from the specified registry key.
+        ''' Load RDS limits from the specified registry key.
         ''' </summary>
         ''' <param name="SettingsRoot">Reference to an open registry key to read limits from.</param>
         ''' <remarks></remarks>
-        Private Sub GetFromRegistry(ByVal SettingsRoot As RegistryKey)
+        Private Sub GetRDSFromRegistry(ByVal SettingsRoot As RegistryKey)
 
             'Get the active session limit.
             If Not (SettingsRoot.GetValue("MaxConnectionTime") Is Nothing) Then
@@ -226,13 +290,35 @@ Public Class SessionArbiter
                 End If
             End If
 
-            'Get the idle session limit.
+            'Gets whether to log off or disconnect idle sessions.
             If Not (SettingsRoot.GetValue("fResetBroken") Is Nothing) Then
                 TerminateSession = SettingsRoot.GetValue("fResetBroken")
             End If
 
         End Sub
 
+
+        ''' <summary>
+        ''' Load RDS limits from the specified registry key.
+        ''' </summary>
+        ''' <param name="SettingsRoot">Reference to an open registry key to read limits from.</param>
+        ''' <remarks></remarks>
+        Private Sub GetSAFromRegistry(ByVal SettingsRoot As RegistryKey)
+
+            Dim iSuspend As UInteger
+
+            'Get whether to log off on lid close
+            If Not (SettingsRoot.GetValue("LogoffOnLidClose") Is Nothing) Then
+                iSuspend = SettingsRoot.GetValue("LogoffOnLidClose")
+                'If configured value read but is invalid (>2), set to 0.
+                If iSuspend > 2 Then
+                    iSuspend = 0
+                End If
+            End If
+
+            iLogoff = Math.Max(iSuspend, iLogoff)
+
+        End Sub
 
         ''' <summary>
         ''' Open the HKEY_USERS subkey for a given named user account.
@@ -379,8 +465,11 @@ Public Class SessionArbiter
         ''' </summary>
         ''' <remarks></remarks>
         LogoffDisconnectedFailed = 2
-
-        Other = 3
+        ''' <summary>
+        ''' System power state altered.
+        ''' </summary>
+        ''' <remarks></remarks>
+        PowerState = 3
     End Enum
 
     ''' <summary>
@@ -446,7 +535,7 @@ Public Class SessionArbiter
         ListenThread.Abort()
 
         'Stop listening for power notifications
-        UnregisterForPowerNotifications()
+        oListener.UnregisterForPowerNotifications()
 
     End Sub
 
@@ -507,6 +596,7 @@ Public Class SessionArbiter
                     Console.WriteLine("Active: " & oLimits.Active)
                     Console.WriteLine("Disconnected: " & oLimits.Disconnected)
                     Console.WriteLine("Idle: " & oLimits.Idle)
+                    Console.WriteLine("Logoff on lid close: " & oLimits.LogoffOnLidClose)
 #End If
 
                     'Set next sync to run after configured sync period.
@@ -602,8 +692,10 @@ Public Class SessionArbiter
     ''' </summary>
     ''' <param name="Session">Session to log off.</param>
     ''' <remarks></remarks>
-    Private Sub LogoffSession(ByVal Session As ITerminalServicesSession)
+    Private Function LogoffSession(ByVal Session As ITerminalServicesSession) As Boolean
+
         Dim sLogMessage As String = Session.ConnectionState.ToString.ToLower & " session for user " & Session.UserAccount.Value & "."
+        Dim bSuccess As Boolean = True
 
         Select Case Session.ConnectionState
             Case ConnectionState.Disconnected
@@ -620,10 +712,13 @@ Public Class SessionArbiter
             'Log success
             WriteEventLogEntry("Successfully logged off " & sLogMessage, EventLogEntryType.Information, ArbiterEvent.LogoffDisconnected)
         Catch ex As Exception
+            bSuccess = False
             'Log failure
             WriteEventLogEntry("Failed to log off " & sLogMessage & vbCrLf & vbCrLf & ex.Message, EventLogEntryType.Warning, ArbiterEvent.LogoffDisconnectedFailed)
         End Try
-    End Sub
+
+        Return bSuccess
+    End Function
 
 
     ''' <summary>
@@ -660,8 +755,10 @@ Public Class SessionArbiter
 
         Const sCheckPeriodValue As String = "CheckPeriod"
         Const sIgnoreRDSPolicy As String = "IgnorePolicy"
-        Const iDefaultCheckPeriod As Integer = 900000 'Default is 15 minutes (90000ms)
+        Const sSuspendAfterLidLogoff As String = "SuspendAfterLidLogoff"
+        Const iDefaultCheckPeriod As UInteger = 900000 'Default is 15 minutes (900s)
         Const bDefaultIgnorePolicy As Boolean = False
+        Const bSuspendAfterLidLogoff As Boolean = False
 
         Dim oRegKey As RegistryKey = Nothing
 
@@ -674,7 +771,7 @@ Public Class SessionArbiter
                 StandardCheckPeriod = oRegKey.GetValue(sCheckPeriodValue)
                 'If configured value read and is valid (1 minute or greater), set it as the check period.
                 If StandardCheckPeriod < 60000 Then
-                    StandardCheckPeriod = 0
+                    StandardCheckPeriod = iDefaultCheckPeriod
                 End If
             Catch ex As Exception
                 'Use default if a setting could not be read
@@ -687,6 +784,15 @@ Public Class SessionArbiter
             Catch ex As Exception
                 'Use default if a setting could not be read
                 IgnoreRDSPolicy = bDefaultIgnorePolicy
+            End Try
+
+
+            'Get whether to suspend after a logoff due to lod closure
+            Try
+                SuspendAfterLidLogoff = oRegKey.GetValue(sSuspendAfterLidLogoff)
+            Catch ex As Exception
+                'Use default if a setting could not be read
+                SuspendAfterLidLogoff = bSuspendAfterLidLogoff
             End Try
 
         Catch ex As Exception
@@ -724,154 +830,14 @@ Public Class SessionArbiter
     End Sub
 
     ''' <summary>
-    ''' Register to receive lid close notifications.
-    ''' </summary>
-    ''' <param name="hWnd">Windows handle to receive Windows messages.</param>
-    ''' <remarks></remarks>
-    Private Shared Sub RegisterForPowerNotifications(ByVal hWnd As IntPtr)
-        hCallback = RegisterPowerSettingNotification(hWnd, GUID_LIDCLOSE_ACTION, DEVICE_NOTIFY_WINDOW_HANDLE)
-    End Sub
-
-    ''' <summary>
-    ''' Unregister the application from receiving lid close notifications.
-    ''' </summary>
-    ''' <returns>Success status.</returns>
-    ''' <remarks></remarks>
-    Private Shared Function UnregisterForPowerNotifications() As Boolean
-        Return UnregisterPowerSettingNotification(hCallback)
-    End Function
-
-    ''' <summary>
     ''' Starts a listener window for lid events
     ''' </summary>
     ''' <remarks></remarks>
     Sub RunListenThread()
         'Listen for lid events
-        Dim oListener As New LidListener(AddressOf LogoffActiveSessions)
+        oListener = New LidListener(AddressOf LogoffActiveSessions)
         Application.Run()
     End Sub
-
-    ''' <summary>
-    ''' Listener to process power notification messages.
-    ''' </summary>
-    ''' <remarks></remarks>
-    Class LidListener
-        Inherits NativeWindow
-
-        Public Delegate Sub OnLidCloseEvent()
-
-        Private dLidClose As OnLidCloseEvent
-
-        ''' <summary>
-        ''' Stores the date and time the program started listening for messages.
-        ''' </summary>
-        ''' <remarks></remarks>
-        Public Started As DateTime
-
-        ''' <summary>
-        ''' Whether to force the logoff (default is true).
-        ''' </summary>
-        ''' <remarks></remarks>
-        Private ForceLogoff As Boolean
-
-        Public Sub New(ByVal OnLidClose As OnLidCloseEvent)
-
-            MyBase.New()
-
-            'Dummy parameters used to create window
-            Dim oParams As New CreateParams
-
-            With oParams
-                .X = 100
-                .Y = 100
-                .Height = 100
-                .Width = 100
-            End With
-
-            'Create the listener window
-            Me.CreateHandle(oParams)
-
-            'Register this application to receive power notification messages.
-            RegisterForPowerNotifications(Me.Handle)
-            Started = Now
-
-            'Always force the logoff if the /noforce parameter is not specified
-            ForceLogoff = True
-
-            dLidClose = OnLidClose
-
-            For Each sArg In My.Application.CommandLineArgs
-                If sArg.Trim.ToLower = "/noforce" Then ForceLogoff = False
-            Next
-
-#If DEBUG Then
-            If Not ForceLogoff Then Console.WriteLine("/noforce parameter specified. User will not be forced to log off.")
-
-            Console.WriteLine("Listener started: " & Started.ToString & " with handle " & Me.Handle.ToString)
-#End If
-
-
-        End Sub
-
-
-        ''' <summary>
-        ''' Processes Windows messages. Modified to react to power notification messages.
-        ''' </summary>
-        ''' <param name="m">Message type recevied.</param>
-        ''' <remarks></remarks>
-        Protected Overrides Sub WndProc(ByRef m As System.Windows.Forms.Message)
-
-#If DEBUG Then
-            Console.WriteLine("Message received: " & m.Msg)
-#End If
-
-            'Respond to power notification
-            If m.Msg = WM_POWERBROADCAST Then
-                OnPowerBroadcast(m)
-            End If
-
-            'Handle everything else
-            MyBase.WndProc(m)
-
-        End Sub
-
-        ''' <summary>
-        ''' Reacts to the power notification message
-        ''' </summary>.
-        ''' <param name="m">Type of power notification message recevied.</param>
-        ''' <remarks></remarks>
-        Private Sub OnPowerBroadcast(ByRef m As System.Windows.Forms.Message)
-
-            If m.WParam.ToInt32 = PBT_POWERSETTINGCHANGE Then
-
-#If DEBUG Then
-                Console.Write("Power setting change: " & m.LParam.ToString & " at " & Now.ToString)
-#End If
-                'Ignore any notification within 1 second of startup.
-                'This is a fudge since Windows sends a message immediately after registering the listener for some reason, even if the lid
-                'has not been closed.
-                If Started.AddSeconds(1) < Now Then
-
-#If DEBUG Then
-                    Console.WriteLine(", logging user off now.")
-#End If
-
-                    'Log the user off
-                    dLidClose.Invoke()
-
-                Else
-                    'Power notification received immediately after startup, so ignore it.
-#If DEBUG Then
-                    Console.WriteLine(" (ignored).")
-#End If
-                End If
-
-            End If
-
-        End Sub
-
-    End Class
-
 
 
     ''' <summary>
@@ -879,6 +845,11 @@ Public Class SessionArbiter
     ''' </summary>
     ''' <remarks></remarks>
     Private Sub LogoffActiveSessions()
+
+        ReadServiceParameters()
+
+        'Has at least one session been logged off?
+        Dim bLoggedoff As Boolean = False
 
 #If DEBUG Then
         Console.WriteLine("Checking sessions to log off.")
@@ -893,18 +864,29 @@ Public Class SessionArbiter
 
                 'Only check sessions with usernames (ignores Services session).
                 If Not oSession.UserAccount Is Nothing Then
-                    If oSession.ConnectionState = ConnectionState.Active Then
 
-                        'Logoff this session
-                        LogoffSession(oSession)
+                    'Get session parameters
+                    Dim oLimits As New SessionLimits(oSession.UserAccount.Value, IgnoreRDSPolicy)
 
-                        'TODO: Only do this if requested
-                        Application.SetSuspendState(PowerState.Suspend, False, False)
+                    If oLimits.LogoffOnLidClose Then
+                        'Only logoff the session if it is active
+                        If oSession.ConnectionState = ConnectionState.Active Then
+
+                            'Logoff this session
+                            bLoggedoff = bLoggedoff Or LogoffSession(oSession)
+
+                        End If
 
                     End If
                 End If
 
             Next
+
+            'Suspend if requested and at least one session has logged off
+            If bLoggedoff And SuspendAfterLidLogoff Then
+                WriteEventLogEntry("Entering sleep mode.", EventLogEntryType.Information, ArbiterEvent.PowerState)
+                Application.SetSuspendState(PowerState.Suspend, False, False)
+            End If
 
         End Using
 
