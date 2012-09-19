@@ -45,7 +45,7 @@ Public Class SessionArbiter
     ''' Whether to put the computer into Suspend after a user is logged off due to the lid closing.
     ''' </summary>
     ''' <remarks></remarks>
-    Public SuspendAfterLidLogoff As Boolean
+    Public SuspendOnLidCloseAtLogonScreen As Boolean
 
 
     ''' <summary>
@@ -755,10 +755,10 @@ Public Class SessionArbiter
 
         Const sCheckPeriodValue As String = "CheckPeriod"
         Const sIgnoreRDSPolicy As String = "IgnorePolicy"
-        Const sSuspendAfterLidLogoff As String = "SuspendAfterLidLogoff"
+        Const sSuspendOnLidCloseAtLogonScreen As String = "SuspendOnGinaLidClose"
         Const iDefaultCheckPeriod As UInteger = 900000 'Default is 15 minutes (900s)
         Const bDefaultIgnorePolicy As Boolean = False
-        Const bSuspendAfterLidLogoff As Boolean = False
+        Const bSuspendOnLidCloseAtLogonScreen As Boolean = False
 
         Dim oRegKey As RegistryKey = Nothing
 
@@ -789,10 +789,10 @@ Public Class SessionArbiter
 
             'Get whether to suspend after a logoff due to lod closure
             Try
-                SuspendAfterLidLogoff = oRegKey.GetValue(sSuspendAfterLidLogoff)
+                SuspendOnLidCloseAtLogonScreen = oRegKey.GetValue(sSuspendOnLidCloseAtLogonScreen)
             Catch ex As Exception
                 'Use default if a setting could not be read
-                SuspendAfterLidLogoff = bSuspendAfterLidLogoff
+                SuspendOnLidCloseAtLogonScreen = bSuspendOnLidCloseAtLogonScreen
             End Try
 
         Catch ex As Exception
@@ -848,9 +848,6 @@ Public Class SessionArbiter
 
         ReadServiceParameters()
 
-        'Has at least one session been logged off?
-        Dim bLoggedoff As Boolean = False
-
 #If DEBUG Then
         Console.WriteLine("Checking sessions to log off.")
 #End If
@@ -873,7 +870,7 @@ Public Class SessionArbiter
                         If oSession.ConnectionState = ConnectionState.Active Then
 
                             'Logoff this session
-                            bLoggedoff = bLoggedoff Or LogoffSession(oSession)
+                            LogoffSession(oSession)
 
                         End If
 
@@ -882,10 +879,10 @@ Public Class SessionArbiter
 
             Next
 
-            'Suspend if requested and at least one session has logged off
-            If bLoggedoff And SuspendAfterLidLogoff Then
+            'Suspend if requested
+            If SuspendOnLidCloseAtLogonScreen Then
                 WriteEventLogEntry("Entering sleep mode.", EventLogEntryType.Information, ArbiterEvent.PowerState)
-                Application.SetSuspendState(PowerState.Suspend, False, False)
+                Application.SetSuspendState(PowerState.Suspend, True, False)
             End If
 
         End Using
