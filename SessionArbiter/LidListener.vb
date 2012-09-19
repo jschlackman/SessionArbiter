@@ -43,7 +43,7 @@ Class LidListener
     ''' </summary>
     ''' <remarks></remarks>
     Public Sub RegisterForPowerNotifications()
-        hCallback = RegisterPowerSettingNotification(Me.Handle, GUID_LIDCLOSE_ACTION, DEVICE_NOTIFY_WINDOW_HANDLE)
+        hCallback = RegisterPowerSettingNotification(Me.Handle, GUID_LIDSWITCH_STATE_CHANGE, DEVICE_NOTIFY_WINDOW_HANDLE)
     End Sub
 
     ''' <summary>
@@ -126,16 +126,17 @@ Class LidListener
 
         If m.WParam.ToInt32 = PBT_POWERSETTINGCHANGE Then
 
-#If DEBUG Then
-                Console.Write("Power setting change: " & m.LParam.ToString & " at " & Now.ToString)
-#End If
-            'Ignore any notification within 1 second of startup.
-            'This is a fudge since Windows sends a message immediately after registering the listener for some reason, even if the lid
-            'has not been closed.
-            If Started.AddSeconds(1) < Now Then
+            Dim oSetting As POWERBROADCAST_SETTING = m.GetLParam(GetType(POWERBROADCAST_SETTING))
 
 #If DEBUG Then
-                    Console.WriteLine(", logging user off now.")
+            Console.Write("Lid status report: " & oSetting.Data.ToString & " at " & Now.ToString)
+#End If
+
+            'If lid is closed and it's more than 1 second since we started monitoring (don't want to sleep if the machine starts with the lid closed already)
+            If (Now > Started.AddSeconds(1)) And oSetting.Data = 0 Then
+
+#If DEBUG Then
+                    Console.WriteLine(" (Lid close), logging user off now.")
 #End If
 
                 'Log the user off
@@ -144,7 +145,7 @@ Class LidListener
             Else
                 'Power notification received immediately after startup, so ignore it.
 #If DEBUG Then
-                    Console.WriteLine(" (ignored).")
+                Console.WriteLine(" (Lid open).")
 #End If
             End If
 
