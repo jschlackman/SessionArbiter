@@ -792,6 +792,13 @@ Public Class SessionArbiter
         Const bDefaultSuspendOnLidCloseAtLogonScreen As Boolean = False
         Const iDefaultWaitBeforeSuspend As UInteger = 2000 'Default is 2s
 
+        'Start with defaults
+        StandardCheckPeriod = iDefaultCheckPeriod
+        IgnoreRDSPolicy = bDefaultIgnorePolicy
+        SuspendOnLidCloseAtLogonScreen = bDefaultSuspendOnLidCloseAtLogonScreen
+        WaitBeforeSuspend = iDefaultWaitBeforeSuspend
+
+
         Dim oRegKey As RegistryKey = Nothing
 
         Try
@@ -839,7 +846,7 @@ Public Class SessionArbiter
 
                 'If configured value read but is invalid (less than 1 ms), use the default instead.
                 If WaitBeforeSuspend < 1 Then
-                    StandardCheckPeriod = iDefaultCheckPeriod
+                    WaitBeforeSuspend = iDefaultWaitBeforeSuspend
                 End If
             Else
                 'Use default if a setting could not be read
