@@ -53,10 +53,10 @@ Public Class SessionArbiter
     Public IgnoreRDSPolicy As Boolean
 
     ''' <summary>
-    ''' Whether to put the computer into Suspend after a user is logged off due to the lid closing.
+    ''' What action to take after a user is logged off due to the lid closing (0 = No action, 1 = Suspend, 2 = Hibernate).
     ''' </summary>
     ''' <remarks></remarks>
-    Public SuspendOnLidCloseAtLogonScreen As Boolean
+    Public SuspendOnLidCloseAtLogonScreen As UInteger
 
     ''' <summary>
     ''' How long to wait in milliseconds before putting the cmputer into Suspend after the lid is closed
@@ -958,7 +958,13 @@ Public Class SessionArbiter
 
         'Stop the timer so it doesn't run again after resume
         oSuspendTimer.Stop()
-        Application.SetSuspendState(PowerState.Suspend, True, False)
+
+        If SuspendOnLidCloseAtLogonScreen = 1 Then
+            Application.SetSuspendState(PowerState.Suspend, True, False)
+        ElseIf SuspendOnLidCloseAtLogonScreen = 2 Then
+            Application.SetSuspendState(PowerState.Hibernate, True, False)
+        End If
+
     End Sub
 
 
