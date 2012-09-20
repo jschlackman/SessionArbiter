@@ -22,11 +22,22 @@ Public Class SessionArbiter
     Private WithEvents oCheckTimer As Timers.Timer
 
     ''' <summary>
+    ''' Suspend countdown timer
+    ''' </summary>
+    ''' <remarks></remarks>
+    Private WithEvents oSuspendTimer As Timers.Timer
+
+
+    ''' <summary>
     ''' Background listener thread for lid events
     ''' </summary>
     ''' <remarks></remarks>
     Private ListenThread As Thread
 
+    ''' <summary>
+    ''' Lid event listener
+    ''' </summary>
+    ''' <remarks></remarks>
     Private oListener As LidListener
 
     ''' <summary>
@@ -47,6 +58,11 @@ Public Class SessionArbiter
     ''' <remarks></remarks>
     Public SuspendOnLidCloseAtLogonScreen As Boolean
 
+    ''' <summary>
+    ''' How long to wait in milliseconds before putting the cmputer into Suspend after the lid is closed
+    ''' </summary>
+    ''' <remarks></remarks>
+    Public WaitBeforeSuspend As UInteger
 
     ''' <summary>
     ''' Loads and stores configured session limits as they apply to a given user on the current computer.
@@ -470,6 +486,11 @@ Public Class SessionArbiter
         ''' </summary>
         ''' <remarks></remarks>
         PowerState = 3
+        ''' <summary>
+        ''' An unexpected error occured during normal service operation.
+        ''' </summary>
+        ''' <remarks></remarks>
+        OperationalError = 4
     End Enum
 
     ''' <summary>
@@ -499,9 +520,15 @@ Public Class SessionArbiter
     ''' <remarks></remarks>
     Public Sub StartArbiter()
         oCheckTimer = New Timers.Timer
+        oSuspendTimer = New Timers.Timer
 
         'Read initial config from registry.
         ReadServiceParameters()
+
+#If DEBUG Then
+        Console.WriteLine("Suspend on lid close: " & SuspendOnLidCloseAtLogonScreen)
+        Console.WriteLine("Wait time before suspend: " & WaitBeforeSuspend)
+#End If
 
         'First sync after 5 seconds
         oCheckTimer.Interval = 5000
@@ -509,6 +536,8 @@ Public Class SessionArbiter
         'Create a background listerner thread to process lid events
         ListenThread = New Thread(AddressOf RunListenThread)
         ListenThread.IsBackground = True
+
+        oSuspendTimer.Interval = WaitBeforeSuspend
 
     End Sub
 
@@ -597,6 +626,7 @@ Public Class SessionArbiter
                     Console.WriteLine("Disconnected: " & oLimits.Disconnected)
                     Console.WriteLine("Idle: " & oLimits.Idle)
                     Console.WriteLine("Logoff on lid close: " & oLimits.LogoffOnLidClose)
+
 #End If
 
                     'Set next sync to run after configured sync period.
@@ -756,9 +786,11 @@ Public Class SessionArbiter
         Const sCheckPeriodValue As String = "CheckPeriod"
         Const sIgnoreRDSPolicy As String = "IgnorePolicy"
         Const sSuspendOnLidCloseAtLogonScreen As String = "SuspendOnGinaLidClose"
+        Const sWaitBeforeSuspend As String = "WaitBeforeSuspend"
         Const iDefaultCheckPeriod As UInteger = 900000 'Default is 15 minutes (900s)
         Const bDefaultIgnorePolicy As Boolean = False
-        Const bSuspendOnLidCloseAtLogonScreen As Boolean = False
+        Const bDefaultSuspendOnLidCloseAtLogonScreen As Boolean = False
+        Const iDefaultWaitBeforeSuspend As UInteger = 2000 'Default is 2s
 
         Dim oRegKey As RegistryKey = Nothing
 
@@ -766,39 +798,57 @@ Public Class SessionArbiter
             'Open the SyncDesc key with read-only access.
             oRegKey = Registry.LocalMachine.OpenSubKey(sServiceParamsKey, False)
 
+            Dim sValues As New List(Of String)
+
+            For Each sValue As String In oRegKey.GetValueNames
+                sValues.Add(sValue.ToUpper)
+            Next
+
             'Get the check period
-            Try
+            If sValues.Contains(sCheckPeriodValue.ToUpper) Then
                 StandardCheckPeriod = oRegKey.GetValue(sCheckPeriodValue)
-                'If configured value read and is valid (1 minute or greater), set it as the check period.
+                'If configured value read but is invalid (less than 1 minute), use the default instead.
                 If StandardCheckPeriod < 60000 Then
                     StandardCheckPeriod = iDefaultCheckPeriod
                 End If
-            Catch ex As Exception
+            Else
                 'Use default if a setting could not be read
                 StandardCheckPeriod = iDefaultCheckPeriod
-            End Try
+            End If
 
             'Get whether to ignore RDS policy
-            Try
+            If sValues.Contains(sIgnoreRDSPolicy.ToUpper) Then
                 IgnoreRDSPolicy = oRegKey.GetValue(sIgnoreRDSPolicy)
-            Catch ex As Exception
+            Else
                 'Use default if a setting could not be read
                 IgnoreRDSPolicy = bDefaultIgnorePolicy
-            End Try
+            End If
 
 
             'Get whether to suspend after a logoff due to lod closure
-            Try
+            If sValues.Contains(sSuspendOnLidCloseAtLogonScreen.ToUpper) Then
                 SuspendOnLidCloseAtLogonScreen = oRegKey.GetValue(sSuspendOnLidCloseAtLogonScreen)
-            Catch ex As Exception
+            Else
                 'Use default if a setting could not be read
-                SuspendOnLidCloseAtLogonScreen = bSuspendOnLidCloseAtLogonScreen
-            End Try
+                SuspendOnLidCloseAtLogonScreen = bDefaultSuspendOnLidCloseAtLogonScreen
+            End If
+
+            'Get the wait period before suspend
+            If sValues.Contains(sWaitBeforeSuspend.ToUpper) Then
+                WaitBeforeSuspend = oRegKey.GetValue(sWaitBeforeSuspend)
+
+                'If configured value read but is invalid (less than 1 ms), use the default instead.
+                If WaitBeforeSuspend < 1 Then
+                    StandardCheckPeriod = iDefaultCheckPeriod
+                End If
+            Else
+                'Use default if a setting could not be read
+                WaitBeforeSuspend = iDefaultWaitBeforeSuspend
+            End If
+
 
         Catch ex As Exception
-            'Use default values for everything if there was a problem opening the registry.
-            StandardCheckPeriod = iDefaultCheckPeriod
-            IgnoreRDSPolicy = bDefaultIgnorePolicy
+            WriteEventLogEntry("Could not access service parameters registry key.", EventLogEntryType.Error, ArbiterEvent.OperationalError)
         Finally
             If Not oRegKey Is Nothing Then oRegKey.Close()
         End Try
@@ -835,7 +885,7 @@ Public Class SessionArbiter
     ''' <remarks></remarks>
     Sub RunListenThread()
         'Listen for lid events
-        oListener = New LidListener(AddressOf LogoffActiveSessions)
+        oListener = New LidListener(AddressOf LogoffActiveSessions, AddressOf CancelSuspendTimer)
         Application.Run()
     End Sub
 
@@ -881,12 +931,35 @@ Public Class SessionArbiter
 
             'Suspend if requested
             If SuspendOnLidCloseAtLogonScreen Then
-                WriteEventLogEntry("Entering sleep mode.", EventLogEntryType.Information, ArbiterEvent.PowerState)
-                Application.SetSuspendState(PowerState.Suspend, True, False)
+                'Start countdown
+                oSuspendTimer.Start()
             End If
 
         End Using
 
     End Sub
+
+    ''' <summary>
+    ''' Cancels the timer for the suspend operation.
+    ''' </summary>
+    ''' <remarks></remarks>
+    Private Sub CancelSuspendTimer()
+        oSuspendTimer.Stop()
+    End Sub
+
+    ''' <summary>
+    ''' Puts the computer into Suspend when the countdown timer expires.
+    ''' </summary>
+    ''' <param name="sender"></param>
+    ''' <param name="e"></param>
+    ''' <remarks></remarks>
+    Private Sub OnSuspendTimer(ByVal sender As System.Object, ByVal e As System.Timers.ElapsedEventArgs) Handles oSuspendTimer.Elapsed
+        WriteEventLogEntry("Entering sleep mode.", EventLogEntryType.Information, ArbiterEvent.PowerState)
+
+        'Stop the timer so it doesn't run again after resume
+        oSuspendTimer.Stop()
+        Application.SetSuspendState(PowerState.Suspend, True, False)
+    End Sub
+
 
 End Class
