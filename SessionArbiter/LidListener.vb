@@ -12,13 +12,19 @@ Class LidListener
     ''' Delegate type for lid close event
     ''' </summary>
     ''' <remarks></remarks>
-    Public Delegate Sub OnLidCloseEvent()
+    Public Delegate Sub OnLidEvent()
 
     ''' <summary>
     ''' Internal variable for lid close delegate
     ''' </summary>
     ''' <remarks></remarks>
-    Private dLidClose As OnLidCloseEvent
+    Private dLidClose As OnLidEvent
+
+    ''' <summary>
+    ''' Internal variable for lid close delegate
+    ''' </summary>
+    ''' <remarks></remarks>
+    Private dLidOpen As OnLidEvent
 
     ''' <summary>
     ''' Internal variable to store the lid event callback handle.
@@ -56,7 +62,7 @@ Class LidListener
     End Function
 
 
-    Public Sub New(ByVal OnLidClose As OnLidCloseEvent)
+    Public Sub New(ByVal OnLidClose As OnLidEvent, ByVal OnLidOpen As OnLidEvent)
 
         MyBase.New()
 
@@ -120,7 +126,7 @@ Class LidListener
     ''' <summary>
     ''' Reacts to the power notification message
     ''' </summary>.
-    ''' <param name="m">Type of power notification message recevied.</param>
+    ''' <param name="m">Type of power notification message received.</param>
     ''' <remarks></remarks>
     Private Sub OnPowerBroadcast(ByRef m As System.Windows.Forms.Message)
 
@@ -132,21 +138,27 @@ Class LidListener
             Console.Write("Lid status report: " & oSetting.Data.ToString & " at " & Now.ToString)
 #End If
 
-            'If lid is closed and it's more than 1 second since we started monitoring (don't want to sleep if the machine starts with the lid closed already)
-            If (Now > Started.AddSeconds(1)) And oSetting.Data = 0 Then
+            'If it's more than 1 second since we started monitoring (don't want to react to the status report when the listener is registered)
+            If Now > Started.AddSeconds(1) Then
+
+            End If
+
+            'If lid closed
+            If oSetting.Data = 0 Then
 
 #If DEBUG Then
-                    Console.WriteLine(" (Lid close), logging user off now.")
+                Console.WriteLine(" (Lid close), logging user off now.")
 #End If
-
-                'Log the user off
-                dLidClose.Invoke()
+                'Execute lid closure delegate
+                If Not dLidClose Is Nothing Then dLidClose.Invoke()
 
             Else
-                'Power notification received immediately after startup, so ignore it.
+                'Lid open
 #If DEBUG Then
                 Console.WriteLine(" (Lid open).")
 #End If
+                'Execute lid open delegate
+                If Not dLidOpen Is Nothing Then dLidClose.Invoke()
             End If
 
         End If
