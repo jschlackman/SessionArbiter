@@ -1,0 +1,4 @@
+To build setup:
+
+1. Build base MSI with Advanced Istaller
+2. Import additional table files in Merge folder using InstEd or Orca
