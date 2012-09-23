@@ -16,6 +16,12 @@ Public Class SessionArbiter
     Private Const sServiceParamsKey As String = "SYSTEM\CurrentControlSet\services\SessionArbiter\Parameters"
 
     ''' <summary>
+    ''' Registry path to Session Arbiter policies
+    ''' </summary>
+    ''' <remarks></remarks>
+    Private Const sPolicyKeySA As String = "Software\Policies\SessionArbiter"
+
+    ''' <summary>
     ''' Session limit check timer
     ''' </summary>
     ''' <remarks></remarks>
@@ -53,16 +59,16 @@ Public Class SessionArbiter
     Public IgnoreRDSPolicy As Boolean
 
     ''' <summary>
-    ''' What action to take after a user is logged off due to the lid closing (0 = No action, 1 = Suspend, 2 = Hibernate).
+    ''' What action the countdown timer takes after a user is logged off due to the lid closing (0 = No action, 1 = Suspend, 2 = Hibernate).
     ''' </summary>
     ''' <remarks></remarks>
-    Public SuspendOnLidCloseAtLogonScreen As UInteger
+    Private iTimerSuspend As UInteger
 
     ''' <summary>
-    ''' How long to wait in milliseconds before putting the cmputer into Suspend after the lid is closed
+    ''' How long the countdown timer waits in milliseconds before putting the cmputer into Suspend after the lid is closed
     ''' </summary>
     ''' <remarks></remarks>
-    Public WaitBeforeSuspend As UInteger
+    Private iTimerWait As UInteger
 
     ''' <summary>
     ''' Loads and stores configured session limits as they apply to a given user on the current computer.
@@ -75,47 +81,123 @@ Public Class SessionArbiter
         ''' </summary>
         ''' <remarks></remarks>
         Private Const sPolicyKeyRDS As String = "Software\Policies\Microsoft\Windows NT\Terminal Services"
-        ''' <summary>
-        ''' Registry path to 
-        ''' </summary>
-        ''' <remarks></remarks>
-        Private Const sPolicyKeySA As String = "Software\Policies\SessionArbiter"
 
         ''' <summary>
         ''' Maximum amount of time in milliseconds that the user's session can be active before the session is automatically disconnected or ended. 0 indicates no limit.
         ''' </summary>
         ''' <remarks></remarks>
-        Public Active As UInteger
+        Public ReadOnly Property Active As UInteger
+            Get
+                Return iActive
+            End Get
+        End Property
+
+        ''' <summary>
+        ''' Active limit policy setting.
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private iActive As UInteger
+
         ''' <summary>
         ''' Maximum amount of time in milliseconds that an active session can be idle (without user input) before the session is automatically disconnected or ended. 0 indicates no limit.
         ''' </summary>
         ''' <remarks>Not currently supported for local console sessions.</remarks>
-        Public Idle As UInteger
+        Public ReadOnly Property Idle As UInteger
+            Get
+                Return iIdle
+            End Get
+        End Property
+
+        ''' <summary>
+        ''' Idle limit policy setting
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private iIdle As UInteger
+
         ''' <summary>
         ''' Maximum amount of time in milliseconds that a disconnected user session is kept active on the workstation. 0 indicates no limit.
         ''' </summary>
         ''' <remarks></remarks>
-        Public Disconnected As UInteger
+        Public ReadOnly Property Disconnected As UInteger
+            Get
+                Return iDisconnected
+            End Get
+        End Property
+
+        ''' <summary>
+        ''' Disconnect limit policy setting
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private iDisconnected As UInteger
+
         ''' <summary>
         ''' Whether to log off a session instead of just disconnecting it.
         ''' </summary>
         ''' <remarks></remarks>
-        Public TerminateSession As Boolean
+        Public ReadOnly Property TerminateSession As Boolean
+            Get
+                Return iTerminateSession
+            End Get
+        End Property
+
         ''' <summary>
-        ''' Whether to log off the session wheh the lid is closed
+        ''' Logoff/disconnect policy setting
         ''' </summary>
         ''' <remarks></remarks>
+        Private iTerminateSession As Boolean
+
+        ''' <summary>
+        ''' Whether to log off the session when the lid is closed
+        ''' </summary>
+        ''' <remarks>0 indicates not configured (don't log off), 1 indicates log off, 2 indicates the policy is disabled (don't logoff).</remarks>
         Public ReadOnly Property LogoffOnLidClose As Boolean
             Get
-                Return (iLogoff = 1)
+                Return (iLogoffOnLidClose = 1)
             End Get
         End Property
 
         ''' <summary>
         ''' Logoff on lid close policy state
         ''' </summary>
-        ''' <remarks>0 indicates not configured (don't log off), 1 indicates log off, 2 indicates the policy is disabled (don't logoff).</remarks>
-        Private iLogoff As UInteger
+        ''' <remarks></remarks>
+        Private iLogoffOnLidClose As UInteger
+
+        ''' <summary>
+        ''' Suspend action to take when the lid is closed at the logon screen (0 = No action, 1 = Suspend, 2 = Hibernate).
+        ''' </summary>
+        ''' <value></value>
+        ''' <returns></returns>
+        ''' <remarks></remarks>
+        Public ReadOnly Property SuspendOnLidCloseAtLogonScreen As UInteger
+            Get
+                Return iSuspendOnLidCloseAtLogonScreen
+            End Get
+        End Property
+
+        ''' <summary>
+        ''' Suspend policy setting
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private iSuspendOnLidCloseAtLogonScreen As UInteger
+
+        ''' <summary>
+        ''' How long to wait in milliseconds before entering the configured suspend state at the logon screen.
+        ''' </summary>
+        ''' <value></value>
+        ''' <returns></returns>
+        ''' <remarks></remarks>
+        Public ReadOnly Property WaitBeforeSuspend As UInteger
+            Get
+                Return iWaitBeforeSuspend
+            End Get
+        End Property
+
+        ''' <summary>
+        ''' Wait time policy setting
+        ''' </summary>
+        ''' <remarks></remarks>
+        Private iWaitBeforeSuspend As UInteger
+
         ''' <summary>
         ''' Whether to ignore RDS policy when reading registry settings
         ''' </summary>
@@ -130,9 +212,9 @@ Public Class SessionArbiter
             Get
                 Dim iPeriod As UInteger
 
-                iPeriod = Idle \ 2
-                If Active > 0 Then iPeriod = Math.Min(iPeriod, Active \ 2)
-                If Disconnected > 0 Then iPeriod = Math.Min(iPeriod, Disconnected \ 2)
+                iPeriod = iIdle \ 2
+                If iActive > 0 Then iPeriod = Math.Min(iPeriod, iActive \ 2)
+                If iDisconnected > 0 Then iPeriod = Math.Min(iPeriod, iDisconnected \ 2)
 
                 Return iPeriod
             End Get
@@ -178,9 +260,14 @@ Public Class SessionArbiter
         ''' </summary>
         ''' <remarks></remarks>
         Private Sub InitLimits()
-            Active = 0
-            Idle = 0
-            Disconnected = 0
+            iActive = 0
+            iIdle = 0
+            iDisconnected = 0
+
+            iLogoffOnLidClose = 0
+            iSuspendOnLidCloseAtLogonScreen = 0
+            iWaitBeforeSuspend = 2000
+
         End Sub
 
         ''' <summary>
@@ -281,34 +368,34 @@ Public Class SessionArbiter
 
             'Get the active session limit.
             If Not (SettingsRoot.GetValue("MaxConnectionTime") Is Nothing) Then
-                Active = SettingsRoot.GetValue("MaxConnectionTime")
+                iActive = SettingsRoot.GetValue("MaxConnectionTime")
                 'If configured value read but is invalid (less than 1 minute), set no limit.
-                If Active < 60000 Then
-                    Active = 0
+                If iActive < 60000 Then
+                    iActive = 0
                 End If
             End If
 
             'Get the disconnected session limit.
             If Not (SettingsRoot.GetValue("MaxDisconnectionTime") Is Nothing) Then
-                Disconnected = SettingsRoot.GetValue("MaxDisconnectionTime")
+                iDisconnected = SettingsRoot.GetValue("MaxDisconnectionTime")
                 'If configured value read but is invalid (less than 1 minute), set no limit.
-                If Disconnected < 60000 Then
-                    Disconnected = 0
+                If iDisconnected < 60000 Then
+                    iDisconnected = 0
                 End If
             End If
 
             'Get the idle session limit.
             If Not (SettingsRoot.GetValue("MaxIdleTime") Is Nothing) Then
-                Idle = SettingsRoot.GetValue("MaxIdleTime")
+                iIdle = SettingsRoot.GetValue("MaxIdleTime")
                 'If configured value read but is invalid (less than 1 minute), set no limit.
-                If Idle < 60000 Then
-                    Idle = 0
+                If iIdle < 60000 Then
+                    iIdle = 0
                 End If
             End If
 
             'Gets whether to log off or disconnect idle sessions.
             If Not (SettingsRoot.GetValue("fResetBroken") Is Nothing) Then
-                TerminateSession = SettingsRoot.GetValue("fResetBroken")
+                iTerminateSession = SettingsRoot.GetValue("fResetBroken")
             End If
 
         End Sub
@@ -321,18 +408,51 @@ Public Class SessionArbiter
         ''' <remarks></remarks>
         Private Sub GetSAFromRegistry(ByVal SettingsRoot As RegistryKey)
 
+            Const sLogoffOnLidClose = "LogoffOnLidClose"
+            Const sSuspendOnLidCloseAtLogonScreen As String = "SuspendOnGinaLidClose"
+            Const sWaitBeforeSuspend As String = "WaitBeforeSuspend"
+
+            Dim iLogoff As UInteger
             Dim iSuspend As UInteger
+            Dim iWait As UInteger
 
             'Get whether to log off on lid close
-            If Not (SettingsRoot.GetValue("LogoffOnLidClose") Is Nothing) Then
-                iSuspend = SettingsRoot.GetValue("LogoffOnLidClose")
+            If Not (SettingsRoot.GetValue(sLogoffOnLidClose) Is Nothing) Then
+                iLogoff = SettingsRoot.GetValue(sLogoffOnLidClose)
                 'If configured value read but is invalid (>2), set to 0.
+                If iLogoff > 2 Then
+                    iLogoff = 0
+                End If
+
+                'Set to highest priority setting so far.
+                iLogoffOnLidClose = Math.Max(iLogoff, iLogoffOnLidClose)
+
+            End If
+
+            'Get what suspend action to take after a logoff due to lid closure
+            If Not (SettingsRoot.GetValue(sSuspendOnLidCloseAtLogonScreen) Is Nothing) Then
+                iSuspend = SettingsRoot.GetValue(sSuspendOnLidCloseAtLogonScreen)
+                'If read value is invalid (> 2), set to 0.
                 If iSuspend > 2 Then
                     iSuspend = 0
                 End If
+
+                'Set to highest priority setting so far.
+                iSuspendOnLidCloseAtLogonScreen = Math.Max(iSuspend, iSuspendOnLidCloseAtLogonScreen)
+
             End If
 
-            iLogoff = Math.Max(iSuspend, iLogoff)
+            'Get the wait period before suspend
+            If Not (SettingsRoot.GetValue(sWaitBeforeSuspend) Is Nothing) Then
+                iWait = SettingsRoot.GetValue(sWaitBeforeSuspend)
+                'If wait value is invalid (< 1ms), use the default.
+                If iWait < 1 Then
+                    iWait = 2000
+                End If
+            End If
+
+            'Set to maximum wait setting so far.
+            iWaitBeforeSuspend = Math.Max(iWait, iWaitBeforeSuspend)
 
         End Sub
 
@@ -525,19 +645,17 @@ Public Class SessionArbiter
         'Read initial config from registry.
         ReadServiceParameters()
 
-#If DEBUG Then
-        Console.WriteLine("Suspend on lid close: " & SuspendOnLidCloseAtLogonScreen)
-        Console.WriteLine("Wait time before suspend: " & WaitBeforeSuspend)
-#End If
+        'Get machine-only lid logoff policy
+        Dim oMachineLimits As New SessionLimits
+        iTimerSuspend = oMachineLimits.SuspendOnLidCloseAtLogonScreen
+        iTimerWait = oMachineLimits.WaitBeforeSuspend
 
         'First sync after 5 seconds
         oCheckTimer.Interval = 5000
 
-        'Create a background listerner thread to process lid events
+        'Create a background listener thread to process lid events
         ListenThread = New Thread(AddressOf RunListenThread)
         ListenThread.IsBackground = True
-
-        oSuspendTimer.Interval = WaitBeforeSuspend
 
     End Sub
 
@@ -580,7 +698,10 @@ Public Class SessionArbiter
 #If DEBUG Then
         Console.WriteLine("Starting debug mode.")
         Dim oDebug As New SessionArbiter()
-        oDebug.oCheckTimer.Enabled = True
+
+        oDebug.oCheckTimer.Start()
+        Console.WriteLine("Check timer started.")
+
         Console.Read()
 #Else
         ServiceBase.Run(New SessionArbiter)
@@ -615,17 +736,21 @@ Public Class SessionArbiter
                 If Not oSession.UserAccount Is Nothing Then
 
 #If DEBUG Then
+                    Console.WriteLine()
                     Console.WriteLine("Checking user " & oSession.UserAccount.Value)
 #End If
 
                     Dim oLimits As New SessionLimits(oSession.UserAccount.Value, IgnoreRDSPolicy)
 
 #If DEBUG Then
-                    Console.WriteLine("Session limits for this user:")
+                    Console.WriteLine("Session configuration for this user:")
+                    Console.WriteLine("--")
                     Console.WriteLine("Active: " & oLimits.Active)
                     Console.WriteLine("Disconnected: " & oLimits.Disconnected)
                     Console.WriteLine("Idle: " & oLimits.Idle)
                     Console.WriteLine("Logoff on lid close: " & oLimits.LogoffOnLidClose)
+                    Console.WriteLine("Suspend on lid close: " & oLimits.SuspendOnLidCloseAtLogonScreen)
+                    Console.WriteLine("Wait time before suspend: " & oLimits.WaitBeforeSuspend)
 
 #End If
 
@@ -785,19 +910,12 @@ Public Class SessionArbiter
 
         Const sCheckPeriodValue As String = "CheckPeriod"
         Const sIgnoreRDSPolicy As String = "IgnorePolicy"
-        Const sSuspendOnLidCloseAtLogonScreen As String = "SuspendOnGinaLidClose"
-        Const sWaitBeforeSuspend As String = "WaitBeforeSuspend"
         Const iDefaultCheckPeriod As UInteger = 900000 'Default is 15 minutes (900s)
         Const bDefaultIgnorePolicy As Boolean = False
-        Const bDefaultSuspendOnLidCloseAtLogonScreen As Boolean = False
-        Const iDefaultWaitBeforeSuspend As UInteger = 2000 'Default is 2s
 
         'Start with defaults
         StandardCheckPeriod = iDefaultCheckPeriod
         IgnoreRDSPolicy = bDefaultIgnorePolicy
-        SuspendOnLidCloseAtLogonScreen = bDefaultSuspendOnLidCloseAtLogonScreen
-        WaitBeforeSuspend = iDefaultWaitBeforeSuspend
-
 
         Dim oRegKey As RegistryKey = Nothing
 
@@ -831,31 +949,17 @@ Public Class SessionArbiter
                 IgnoreRDSPolicy = bDefaultIgnorePolicy
             End If
 
-
-            'Get whether to suspend after a logoff due to lod closure
-            If sValues.Contains(sSuspendOnLidCloseAtLogonScreen.ToUpper) Then
-                SuspendOnLidCloseAtLogonScreen = oRegKey.GetValue(sSuspendOnLidCloseAtLogonScreen)
-            Else
-                'Use default if a setting could not be read
-                SuspendOnLidCloseAtLogonScreen = bDefaultSuspendOnLidCloseAtLogonScreen
-            End If
-
-            'Get the wait period before suspend
-            If sValues.Contains(sWaitBeforeSuspend.ToUpper) Then
-                WaitBeforeSuspend = oRegKey.GetValue(sWaitBeforeSuspend)
-
-                'If configured value read but is invalid (less than 1 ms), use the default instead.
-                If WaitBeforeSuspend < 1 Then
-                    WaitBeforeSuspend = iDefaultWaitBeforeSuspend
-                End If
-            Else
-                'Use default if a setting could not be read
-                WaitBeforeSuspend = iDefaultWaitBeforeSuspend
-            End If
-
+#If DEBUG Then
+            Console.WriteLine("Read service parameters.")
+#End If
 
         Catch ex As Exception
+
+#If DEBUG Then
+            Console.WriteLine("Could not access service parameters registry key (this is normal if service is not installed).")
+#Else
             WriteEventLogEntry("Could not access service parameters registry key.", EventLogEntryType.Error, ArbiterEvent.OperationalError)
+#End If
         Finally
             If Not oRegKey Is Nothing Then oRegKey.Close()
         End Try
@@ -932,12 +1036,20 @@ Public Class SessionArbiter
                         End If
 
                     End If
+
+                    'Get highest priority sleep state
+                    iTimerSuspend = Math.Max(iTimerSuspend, oLimits.SuspendOnLidCloseAtLogonScreen)
+                    'Get longest wait time
+                    iTimerWait = Math.Max(iTimerWait, oLimits.WaitBeforeSuspend)
+
                 End If
 
             Next
 
             'Suspend if requested
-            If SuspendOnLidCloseAtLogonScreen Then
+            If iTimerSuspend > 0 Then
+                'Set the interval according to retrieved policy
+                oSuspendTimer.Interval = iTimerWait
                 'Start countdown
                 oSuspendTimer.Start()
             End If
@@ -966,9 +1078,9 @@ Public Class SessionArbiter
         'Stop the timer so it doesn't run again after resume
         oSuspendTimer.Stop()
 
-        If SuspendOnLidCloseAtLogonScreen = 1 Then
+        If iTimerSuspend = 1 Then
             Application.SetSuspendState(PowerState.Suspend, True, False)
-        ElseIf SuspendOnLidCloseAtLogonScreen = 2 Then
+        ElseIf iTimerSuspend = 2 Then
             Application.SetSuspendState(PowerState.Hibernate, True, False)
         End If
 
