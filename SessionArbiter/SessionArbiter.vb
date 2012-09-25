@@ -65,7 +65,7 @@ Public Class SessionArbiter
     Private iTimerSuspend As UInteger
 
     ''' <summary>
-    ''' How long the countdown timer waits in milliseconds before putting the cmputer into Suspend after the lid is closed
+    ''' How long the countdown timer waits in milliseconds before putting the computer into Suspend after the lid is closed
     ''' </summary>
     ''' <remarks></remarks>
     Private iTimerWait As UInteger
@@ -923,40 +923,44 @@ Public Class SessionArbiter
             'Open the SyncDesc key with read-only access.
             oRegKey = Registry.LocalMachine.OpenSubKey(sServiceParamsKey, False)
 
-            Dim sValues As New List(Of String)
+            If Not oRegKey Is Nothing Then
 
-            For Each sValue As String In oRegKey.GetValueNames
-                sValues.Add(sValue.ToUpper)
-            Next
+                Dim sValues As New List(Of String)
 
-            'Get the check period
-            If sValues.Contains(sCheckPeriodValue.ToUpper) Then
-                StandardCheckPeriod = oRegKey.GetValue(sCheckPeriodValue)
-                'If configured value read but is invalid (less than 1 minute), use the default instead.
-                If StandardCheckPeriod < 60000 Then
+                For Each sValue As String In oRegKey.GetValueNames
+                    sValues.Add(sValue.ToUpper)
+                Next
+
+                'Get the check period
+                If sValues.Contains(sCheckPeriodValue.ToUpper) Then
+                    StandardCheckPeriod = oRegKey.GetValue(sCheckPeriodValue)
+                    'If configured value read but is invalid (less than 1 minute), use the default instead.
+                    If StandardCheckPeriod < 60000 Then
+                        StandardCheckPeriod = iDefaultCheckPeriod
+                    End If
+                Else
+                    'Use default if a setting could not be read
                     StandardCheckPeriod = iDefaultCheckPeriod
                 End If
-            Else
-                'Use default if a setting could not be read
-                StandardCheckPeriod = iDefaultCheckPeriod
-            End If
 
-            'Get whether to ignore RDS policy
-            If sValues.Contains(sIgnoreRDSPolicy.ToUpper) Then
-                IgnoreRDSPolicy = oRegKey.GetValue(sIgnoreRDSPolicy)
-            Else
-                'Use default if a setting could not be read
-                IgnoreRDSPolicy = bDefaultIgnorePolicy
-            End If
+                'Get whether to ignore RDS policy
+                If sValues.Contains(sIgnoreRDSPolicy.ToUpper) Then
+                    IgnoreRDSPolicy = oRegKey.GetValue(sIgnoreRDSPolicy)
+                Else
+                    'Use default if a setting could not be read
+                    IgnoreRDSPolicy = bDefaultIgnorePolicy
+                End If
 
 #If DEBUG Then
-            Console.WriteLine("Read service parameters.")
+                Console.WriteLine("Read service parameters.")
 #End If
+
+            End If
 
         Catch ex As Exception
 
 #If DEBUG Then
-            Console.WriteLine("Could not access service parameters registry key (this is normal if service is not installed).")
+            Console.WriteLine("Could not access service parameters registry key.")
 #Else
             WriteEventLogEntry("Could not access service parameters registry key.", EventLogEntryType.Error, ArbiterEvent.OperationalError)
 #End If
